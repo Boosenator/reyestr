@@ -210,55 +210,83 @@ class DetailPanel(tk.Frame):
         if self._is_folder_mode:
             return
 
+        ids = self.bulk_ids if self.bulk_ids is not None else ([self.doc_id] if self.doc_id else [])
+        if not ids:
+            return
+
         try:
-            ids = self.bulk_ids if self.bulk_ids else [self.doc_id]
-            for did in ids:
-                # Перевірка існування документа перед будь-якою дією
-                row = db.query("SELECT filepath FROM documents WHERE id=?", (did,))
-                if not row:
-                    continue
-                filepath = row[0][0]
+            with db.transaction():
+                if self.bulk_ids is not None:
+                    values = (
+                        self._fields["status"].get().strip(),
+                        self._fields["doc_type"].get().strip(),
+                        self._fields["doc_number"].get().strip(),
+                        self._fields["doc_date"].get_date().isoformat(),
+                        self._fields["sender"].get().strip(),
+                        self._fields["tags"].get().strip(),
+                        int(self._fields["is_controlled_var"].get()),
+                        (
+                            self._fields["deadline"].get_date().isoformat()
+                            if self._fields["is_controlled_var"].get()
+                            else None
+                        ),
+                        self._fields["description"].get("1.0", "end-1c").strip(),
+                    )
+                    for did in ids:
+                        db.execute(
+                            "UPDATE documents SET status=?,doc_type=?,doc_number=?,doc_date=?,sender=?,tags=?,is_controlled=?,deadline=?,description=? WHERE id=?",
+                            (*values, did),
+                        )
+                else:
+                    did = ids[0]
+                    row = db.query(
+                        "SELECT filename, filepath FROM documents WHERE id=?",
+                        (did,),
+                    )
+                    if not row:
+                        raise ValueError("Документ не знайдено")
+                    old_name, old_path = row[0]
+                    ext = os.path.splitext(old_name)[1]
+                    new_base = self._fields["filename"].get().strip()
+                    if new_base:
+                        new_name = new_base + ext
+                        new_path = rename_file(old_path, new_name)
+                        db.execute(
+                            "UPDATE documents SET filename=?, filepath=? WHERE id=?",
+                            (new_name, new_path, did),
+                        )
 
-                # У bulk-режимі не змінюємо назву файлу
-                if not self.bulk_ids:
-                    base = self._fields["filename"].get().strip()
-                    if base and filepath:
-                        if os.path.exists(filepath):
-                            ext = os.path.splitext(filepath)[1]
-                            new_name = base + ext
-                            new_path = rename_file(filepath, new_name)
-                            db.execute("UPDATE documents SET filename=?, filepath=? WHERE id=?",
-                                       (new_name, new_path, did))
-
-                params = (
-                    self._fields["status"].get().strip(),
-                    self._fields["doc_type"].get().strip(),
-                    self._fields["doc_number"].get().strip(),
-                    self._fields["doc_date"].get_date().isoformat(),
-                    self._fields["sender"].get().strip(),
-                    self._fields["tags"].get().strip(),
-                    int(self._fields["is_controlled_var"].get()),
-                    (self._fields["deadline"].get_date().isoformat()
-                     if self._fields["is_controlled_var"].get() else None),
-                    self._fields["description"].get("1.0", "end-1c").strip(),
-                    did
-                )
-                db.execute(
-                    "UPDATE documents SET status=?,doc_type=?,doc_number=?,doc_date=?,sender=?,tags=?,is_controlled=?,deadline=?,description=? WHERE id=?",
-                    params
-                )
-
-                nums = get_document_numbers(did)
-                save_document_numbers(did, nums)
+                    params = (
+                        self._fields["status"].get().strip(),
+                        self._fields["doc_type"].get().strip(),
+                        self._fields["doc_number"].get().strip(),
+                        self._fields["doc_date"].get_date().isoformat(),
+                        self._fields["sender"].get().strip(),
+                        self._fields["tags"].get().strip(),
+                        int(self._fields["is_controlled_var"].get()),
+                        (
+                            self._fields["deadline"].get_date().isoformat()
+                            if self._fields["is_controlled_var"].get()
+                            else None
+                        ),
+                        self._fields["description"].get("1.0", "end-1c").strip(),
+                        did,
+                    )
+                    db.execute(
+                        "UPDATE documents SET status=?,doc_type=?,doc_number=?,doc_date=?,sender=?,tags=?,is_controlled=?,deadline=?,description=? WHERE id=?",
+                        params,
+                    )
+                    nums = get_document_numbers(did)
+                    save_document_numbers(did, nums)
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            messagebox.showerror("Помилка", f"Не вдалося зберегти документ(и):\n{e}")
+            messagebox.showerror("Помилка", str(e))
             return
 
         self.bulk_ids = None
         self.doc_id = None
+        self._exit_bulk_mode()
+        self._clear_fields()
         self.app.load_registry_data()
 
     def _on_cancel(self):
